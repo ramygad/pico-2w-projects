@@ -7,15 +7,13 @@ for attempt in range(5):
     except:
         time.sleep(2)
 else:
+    print("Could not open COM6")
     raise SystemExit(1)
 
 time.sleep(1)
 s.reset_input_buffer()
-
-# Soft reload
 s.write(b'\x04')
 
-# Read full output — HTTP fetch may take 10+ sec
 data = b''
 start = time.time()
 while time.time() - start < 30:
