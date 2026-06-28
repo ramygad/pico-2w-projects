@@ -1,110 +1,58 @@
-# Pico 2W — 2.4" ST7789 TFT + EC11 Encoder + Key0 Test
+# Test: single bar at different position — same pixel count as working test
 
 import time
 import board
-import busio
-import displayio
 import digitalio
-import terminalio
-from fourwire import FourWire
-from adafruit_st7789 import ST7789
+import busio
 
-# Release any previously configured display bus
-displayio.release_displays()
-
-# --- SPI display setup ---
-# SCL=GP2, SDA(MOSI)=GP3, CS=GP4, DC=GP5, RES=GP6
+cs = digitalio.DigitalInOut(board.GP4); cs.direction = digitalio.Direction.OUTPUT; cs.value = True
+dc = digitalio.DigitalInOut(board.GP5); dc.direction = digitalio.Direction.OUTPUT
+rst = digitalio.DigitalInOut(board.GP6); rst.direction = digitalio.Direction.OUTPUT
 spi = busio.SPI(clock=board.GP2, MOSI=board.GP3)
-display_bus = FourWire(
-    spi,
-    command=board.GP5,      # DC
-    chip_select=board.GP4,  # CS
-    reset=board.GP6,        # RES
-)
 
-display = ST7789(display_bus, width=320, height=240, rotation=0)
-print(f"✅ Display initialized: {display.width}x{display.height}")
+def ms(t): time.sleep(t/1000)
+def tx(buf):
+    while not spi.try_lock(): pass
+    spi.configure(baudrate=50000000, polarity=0, phase=0, bits=8)
+    cs.value = False; spi.write(bytearray(buf)); cs.value = True
+    spi.unlock()
+def cmd(b): dc.value = False; tx([b])
+def data(buf): dc.value = True; tx(buf)
 
-# --- EC11 Rotary Encoder ---
-# A=GP7, B=GP8, Push=GP9
-enc_a = digitalio.DigitalInOut(board.GP7)
-enc_a.direction = digitalio.Direction.INPUT
-enc_a.pull = digitalio.Pull.UP
+rst.value = False; ms(10); rst.value = True; ms(10)
+cmd(0x01); ms(150); cmd(0x11); ms(200)
+cmd(0x36); data([0xE0]); ms(10)
+cmd(0x3A); data([0x55]); ms(10)
+cmd(0x21); ms(10); cmd(0x13); ms(10); cmd(0x29); ms(100)
 
-enc_b = digitalio.DigitalInOut(board.GP8)
-enc_b.direction = digitalio.Direction.INPUT
-enc_b.pull = digitalio.Pull.UP
+# Draw same pixel count (9600) as working bar, but at a different position
+# CASET: cols 80-119 (40px wide) — same 40px width as working
+# RASET: rows 0-239 — same full height as working
+# Same bytearray size as working test
+cmd(0x2A); data([0x00, 0x50, 0x00, 0x77])  # cols 80-119
+cmd(0x2B); data([0x00, 0x00, 0x00, 0xEF])  # rows 0-239
+cmd(0x2C)
+dc.value = True
+while not spi.try_lock(): pass
+cs.value = False
+px = bytearray([0xF8, 0x00]) * (40 * 240)  # EXACT same as working test
+spi.write(px)
+cs.value = True
+spi.unlock()
+print("Bar at col 80: RED expected")
 
-enc_push = digitalio.DigitalInOut(board.GP9)
-enc_push.direction = digitalio.Direction.INPUT
-enc_push.pull = digitalio.Pull.UP
+# Draw another bar at col 140
+cmd(0x2A); data([0x00, 0x8C, 0x00, 0xB3])  # cols 140-179
+cmd(0x2B); data([0x00, 0x00, 0x00, 0xEF])  # rows 0-239
+cmd(0x2C)
+dc.value = True
+while not spi.try_lock(): pass
+cs.value = False
+# DIFFERENT pixel count: 40px * 240 = 9600 — same as working
+px = bytearray([0x00, 0x1F]) * (40 * 240)
+spi.write(px)
+cs.value = True
+spi.unlock()
+print("Bar at col 140: BLUE expected")
 
-# --- KEY0 Button ---
-key0 = digitalio.DigitalInOut(board.GP13)
-key0.direction = digitalio.Direction.INPUT
-key0.pull = digitalio.Pull.UP
-
-# --- Display a test screen ---
-splash = displayio.Group()
-
-# Dark blue background
-palette = displayio.Palette(1)
-palette[0] = 0x000088
-
-bg_bitmap = displayio.Bitmap(320, 240, 1)
-bg = displayio.TileGrid(bg_bitmap, pixel_shader=palette)
-splash.append(bg)
-display.root_group = splash
-
-# Try text label
-try:
-    from adafruit_display_text import label
-    text_area = label.Label(
-        terminalio.FONT,
-        text="Pico 2W TFT Test",
-        color=0xFFFFFF,
-        x=80, y=30,
-    )
-    splash.append(text_area)
-except ImportError:
-    pass  # no display_text lib — show bitmap only
-
-display.refresh()
-
-# --- Main loop ---
-last_a = enc_a.value
-encoder_pos = 0
-last_push = True
-last_key0 = True
-
-print("\nControls:")
-print("  Turn encoder → position changes")
-print("  Push encoder → toggle")
-print("  KEY0 → toggle")
-print()
-
-while True:
-    # --- Encoder quadrature ---
-    a = enc_a.value
-    b = enc_b.value
-    if a != last_a:
-        if b != a:
-            encoder_pos += 1  # CW
-        else:
-            encoder_pos -= 1  # CCW
-        print(f"Encoder: {encoder_pos}", end="\r")
-    last_a = a
-
-    # --- Encoder push ---
-    push_val = enc_push.value
-    if push_val != last_push and push_val == False:
-        print(f"\n🔘 Push pressed! (pos={encoder_pos})")
-    last_push = push_val
-
-    # --- KEY0 ---
-    k0 = key0.value
-    if k0 != last_key0 and k0 == False:
-        print(f"\n🔘 KEY0 pressed! (pos={encoder_pos})")
-    last_key0 = k0
-
-    time.sleep(0.001)
+while True: time.sleep(1)
