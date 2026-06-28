@@ -27,3 +27,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Wi-Fi credentials (never commit passwords!)
+wifi_config.py
+

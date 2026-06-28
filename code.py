@@ -9,6 +9,8 @@ import socketpool
 import ssl
 import adafruit_requests
 
+import wifi_config
+
 # --- LED for visual feedback ---
 led = digitalio.DigitalInOut(board.LED)
 led.direction = digitalio.Direction.OUTPUT
@@ -21,8 +23,8 @@ def blink(n, t=0.12):
         time.sleep(t)
 
 # --- Wi-Fi ---
-SSID = "YOUR_SSID"
-PASSWORD = "YOUR_PASSWORD_HERE"
+SSID = wifi_config.SSID
+PASSWORD = wifi_config.PASSWORD
 
 print("\n================================================")
 print("  Pico 2W — Wi-Fi Weather: Mainz, Germany")
