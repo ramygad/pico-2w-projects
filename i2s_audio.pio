@@ -1,0 +1,80 @@
+;
+; I2S Audio Output — PIO program for RP2350 / RP2040
+; ===================================================
+;
+; Pin mapping (side-set):
+;   GP{base+0} = BCK  (bit clock)
+;   GP{base+1} = LCK  (word select / left-right clock)
+; OUT pin:
+;   GP{out_base} = DIN (data)
+;
+; I2S format: MSB first, data changes on BCK falling edge,
+; sampled on BCK rising edge. LCK low = left channel, high = right.
+;
+; Each stereo frame = 64 BCK cycles (32 per channel).
+; Each stereo frame consumes two 32-bit words from FIFO:
+;   word 0 = left channel (sample in upper 16 bits, zero-padded)
+;   word 1 = right channel (same format)
+;
+; PIO clock divider sets the sample rate:
+;   sample_rate = sys_clk / (divider * 128)
+;   divider = sys_clk / (sample_rate * 128)
+;
+
+.program i2s_audio
+.side_set 2
+
+.wrap_target
+    ; ── Left channel (LCK = 0) ─────────────────────────
+    pull block          side 0b00       ; get left-channel word, BCK=0 LCK=0
+    set x, 31           side 0b00       ; 32 bits to shift out
+loop_l:
+    out pins, 1         side 0b10       ; BCK=1, LCK=0, shift 1 bit to DIN
+    jmp x-- loop_l      side 0b00       ; BCK=0, LCK=0
+
+    ; ── Right channel (LCK = 1) ────────────────────────
+    pull block          side 0b00       ; get right-channel word
+    set x, 31           side 0b00       ; 32 bits to shift out
+right_loop:
+    out pins, 1         side 0b11       ; BCK=1, LCK=1, shift 1 bit
+    jmp x-- right_loop  side 0b01       ; BCK=0, LCK=1
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+
+static inline void i2s_audio_init(PIO pio, uint sm, uint offset,
+                                   uint pin_bck, uint pin_lck, uint pin_din,
+                                   float clkdiv) {
+    // Connect PIO to the GPIO pins
+    pio_gpio_init(pio, pin_bck);
+    pio_gpio_init(pio, pin_lck);
+    pio_gpio_init(pio, pin_din);
+
+    // Claim and configure the state machine
+    pio_sm_config c = i2s_audio_program_get_default_config(offset);
+
+    // Side-set: BCK and LCK — 2 consecutive pins starting at pin_bck
+    sm_config_set_sideset_pins(&c, pin_bck);
+
+    // OUT pin: DIN (single pin)
+    sm_config_set_out_pins(&c, pin_din, 1);
+
+    // Shift left (MSB first), autopull disabled (manual pull), 32-bit threshold
+    sm_config_set_out_shift(&c, true, false, 32);
+
+    // Join FIFOs for 8-word TX buffer
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    // Clock divider (determines sample rate)
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    // Set all three pins as PIO outputs
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_bck,  2, true);  // BCK, LCK
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_din,  1, true);  // DIN
+
+    // Load config and enable
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
