@@ -5,6 +5,7 @@
 #
 # Features:
 #   - EC11 rotary encoder to switch between cities
+#   - Audio feedback via GY-PCM5102 DAC on GPIO10/11/12
 #   - Cities: Mainz (DE), Alexandria (EG), Cairo (EG), Amsterdam (NL)
 #   - Current: temp, feels-like, humidity, wind, UV, pressure
 #   - 6-hour hourly forecast bar chart with temp-colored bars
@@ -15,8 +16,9 @@
 #   - Auto-refresh every 5 minutes or on encoder push
 #
 # Pinout:
-#   TFT: SCK=GP2, MOSI=GP3, CS=GP4, DC=GP5, RES=GP6
-#   EC11: A=GP7, B=GP8, Push=GP9
+#   TFT:   SCK=GP2, MOSI=GP3, CS=GP4, DC=GP5, RES=GP6
+#   EC11:   A=GP7,  B=GP8,   Push=GP9
+#   I2S:   BCK=GP10, LCK=GP11, DIN=GP12  (GY-PCM5102 DAC)
 #
 # Dependencies (copy to CIRCUITPY):
 #   adafruit_st7789.py  ->  /lib/
@@ -32,6 +34,9 @@ import busio
 import displayio
 import terminalio
 import digitalio
+import audiobusio
+import audiocore
+import array
 import wifi
 import socketpool
 import ssl
@@ -196,6 +201,50 @@ def read_encoder():
                 return 99
 
     return 0
+
+# ══════════════════════════════════════════════════════════════════════
+#  2b. Initialise I2S Audio (GY-PCM5102 DAC)
+# ══════════════════════════════════════════════════════════════════════
+# Pinout: BCK=GP10, LCK=GP11, DIN=GP12
+I2S_BCK = board.GP10
+I2S_LCK = board.GP11
+I2S_DIN = board.GP12
+
+SAMPLE_RATE = 16000
+AUDIO_VOL   = 0.25
+
+audio_i2s = None
+try:
+    audio_i2s = audiobusio.I2SOut(I2S_BCK, I2S_LCK, I2S_DIN)
+    print(f"I2S audio ready ({SAMPLE_RATE} Hz, vol={AUDIO_VOL})")
+except Exception as e:
+    print(f"I2S audio init skipped: {e}")
+
+def make_tone(freq_hz, duration_s, vol=AUDIO_VOL):
+    """Create a square-wave RawSample at given frequency and duration."""
+    n = int(SAMPLE_RATE * duration_s)
+    period = max(2, int(SAMPLE_RATE / freq_hz))
+    half = period // 2
+    samples = array.array('h', [0]) * n
+    for i in range(n):
+        if (i % period) < half:
+            samples[i] = int(32767 * vol)
+        else:
+            samples[i] = -int(32767 * vol)
+    return audiocore.RawSample(samples, sample_rate=SAMPLE_RATE)
+
+# Pre-compute feedback tones (small — <256 bytes each)
+BEEP_CW   = make_tone(1200, 0.10)   # CW: short higher-pitch "up"
+BEEP_CCW  = make_tone(600, 0.10)    # CCW: short lower-pitch "down"
+BEEP_PUSH = make_tone(880, 0.15)    # Push: medium beep
+
+def play_beep(tone):
+    """Play a pre-computed tone if audio is available (non-blocking, returns fast)."""
+    if audio_i2s is not None:
+        try:
+            audio_i2s.play(tone, loop=False)
+        except Exception as e:
+            print(f"Audio error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════
 #  3. Build UI Layout
@@ -459,18 +508,21 @@ while True:
     enc = read_encoder()
 
     if enc == 1:  # CW — next city
+        play_beep(BEEP_CW)
         current_city = (current_city + 1) % N_CITIES
         print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
         update_weather(current_city)
         last_refresh = time.monotonic()
 
     elif enc == -1:  # CCW — previous city
+        play_beep(BEEP_CCW)
         current_city = (current_city - 1) % N_CITIES
         print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
         update_weather(current_city)
         last_refresh = time.monotonic()
 
     elif enc == 99:  # Push — force refresh
+        play_beep(BEEP_PUSH)
         print("Push button — refreshing current city")
         update_weather(current_city)
         last_refresh = time.monotonic()
