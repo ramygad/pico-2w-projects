@@ -162,6 +162,11 @@ last_push_time = 0
 last_rot_time = 0
 ROT_DEBOUNCE = 0.01   # 10ms — quadrature table already rejects noise
 
+# Raw transition counter for speed detection
+raw_transition_count = 0
+last_speed_check = 0
+TRANS_RATE_BINS = [(12, 1), (32, 2), (60, N_CITIES), (120, N_CITIES), (99999, N_CITIES)]
+
 def read_encoder():
     """Poll EC11 encoder using quadrature transition table.
     Returns -1 (CCW), +1 (CW), 0 (no movement), 99 (push)."""
@@ -180,6 +185,7 @@ def read_encoder():
         enc_last_state = cur_state
         if direction != 0:
             enc_counter += direction
+            raw_transition_count += 1
             if abs(enc_counter) >= 4:
                 enc_counter = 0
                 if (now - last_rot_time) > ROT_DEBOUNCE:
@@ -498,18 +504,24 @@ update_weather(current_city)
 REFRESH_SEC = 300  # 5 minutes auto-refresh
 last_refresh = time.monotonic()
 
-# Speed-aware rotation for city switching
-ROT_SPEED_BINS = [(0.30, 1), (0.12, 2), (0.06, N_CITIES), (0.03, N_CITIES), (0.0, N_CITIES)]
+# Speed-aware rotation for city switching — uses raw transition rate
 last_rot_event = 0
 
 def city_step():
-    """Return number of cities to skip based on rotation speed. 1 = normal, up to N_CITIES."""
-    global last_rot_event
+    """Return number of cities to skip based on raw transition rate."""
+    global last_rot_event, last_speed_check, raw_transition_count
     now = time.monotonic()
-    dt = now - last_rot_event
-    last_rot_event = now
-    for threshold, skip in ROT_SPEED_BINS:
-        if dt > threshold:
+    dt = now - last_speed_check
+    count = raw_transition_count
+    raw_transition_count = 0
+    last_speed_check = now
+
+    if count < 4 or dt <= 0:
+        return 1
+
+    rate = count / dt
+    for threshold, skip in TRANS_RATE_BINS:
+        if rate <= threshold:
             return skip
     return N_CITIES
 

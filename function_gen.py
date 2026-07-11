@@ -130,6 +130,18 @@ last_key0_time = 0
 ROT_DEBOUNCE = 0.01   # 10ms — just enough for switch contact settle
 PUSH_DEBOUNCE = 0.3
 
+# Raw quadrature transition tracker for speed detection
+# Counts every valid state transition (never reset by events)
+raw_transition_count = 0
+last_speed_check = 0
+# Transition rate → speed multiplier:
+#   1-3 detents/sec (4-12 trans/s) = 1x
+#   4-8 detents/sec (16-32 trans/s) = 4x
+#   9-15 detents/sec (36-60 trans/s) = 10x
+#   16-30 detents/sec (64-120 trans/s) = 25x
+#   >30 detents/sec (>120 trans/s) = 60x
+TRANS_RATE_BINS = [(12, 1), (32, 4), (60, 10), (120, 25), (99999, 60)]
+
 def read_encoder_and_keys():
     """Read encoder rotation, push, and KEY0.
     Returns: 0=nothing, 1=CW, -1=CCW, 99=push, 98=KEY0 press"""
@@ -148,6 +160,7 @@ def read_encoder_and_keys():
         enc_last_state = cur_state
         if direction != 0:
             enc_counter += direction
+            raw_transition_count += 1  # count every valid transition for speed
             if abs(enc_counter) >= 4:
                 enc_counter = 0
                 if (now - last_rot_time) > ROT_DEBOUNCE:
@@ -381,23 +394,29 @@ def apply_audio():
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Speed multiplier for encoder ───────────────────────────────────────
-# Measures time between detent events. With ROT_DEBOUNCE=10ms, the
-# event rate accurately reflects physical rotation speed.
-# Thresholds: >300ms/detent=1×, 120-300ms=3×, 60-120ms=8×,
-#             30-60ms=20×, <30ms=50×
-last_rot_event = 0
-ROT_SPEED_BINS = [(0.30, 1), (0.12, 3), (0.06, 8), (0.03, 20), (0.0, 50)]
+# Uses raw quadrature transition rate (not debounced events).
+# A fast spin produces many state transitions per second → higher multiplier.
+# Counts transitions accumulated between main loop polls.
 
 def calc_speed():
-    """Compute multiplier from time since last rotation event."""
-    global last_rot_event
+    """Compute multiplier from raw transition rate since last speed check.
+    Rate = transitions / second. 4 transitions = 1 detent."""
+    global last_speed_check, raw_transition_count
     now = time.monotonic()
-    dt = now - last_rot_event
-    last_rot_event = now
-    for threshold, mult in ROT_SPEED_BINS:
-        if dt > threshold:
+    dt = now - last_speed_check
+    count = raw_transition_count
+    raw_transition_count = 0
+    last_speed_check = now
+
+    if count < 4 or dt <= 0:
+        return 1  # not even one full detent since last check
+
+    # transitions per second
+    rate = count / dt
+    for threshold, mult in TRANS_RATE_BINS:
+        if rate <= threshold:
             return mult
-    return 50
+    return 60
 
 def adjust_freq(delta, speed=1):
     """Adjust frequency by delta × speed steps."""
