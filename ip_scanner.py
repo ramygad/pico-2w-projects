@@ -243,20 +243,20 @@ def scan_network():
                 sock.close()
                 if result == 0:
                     open_ports.append(port)
-                    if checked % 5 == 0:
-                        print(f"  {ip_str}:{port} OPEN")
             except Exception:
                 pass
         
         if open_ports:
             hosts.append((ip_str, open_ports))
-            print(f"Host found: {ip_str} ports={open_ports}")
+            # Show on display immediately
+            update_display()
 
         checked += 1
 
-        # Yield control for display updates
-        if checked % 5 == 0:
-            time.sleep(0.01)
+        # Update progress bar every 10 IPs
+        if checked % 10 == 0:
+            status_label.text = f"Scanning... {checked}/254  ({len(hosts)} found)"
+            draw_progress(checked / 254)
 
     # Sort by IP
     hosts.sort(key=lambda h: str_to_ip(h[0]))
