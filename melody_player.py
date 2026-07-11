@@ -64,29 +64,39 @@ BLUE     = 0x4488FF
 PURPLE   = 0xAA44FF
 
 # ── Audio ───────────────────────────────────────────────────────────────
-SAMPLE_RATE = 22050
-TONE_VOLUME = 14000  # 0-32767
+SAMPLE_RATE = 44100
+TONE_VOLUME = 12000  # 0-32767 (reduced to avoid clipping)
+FADE_SAMPLES = 128   # fade out over this many samples to avoid pop
 
 # MIDI note frequencies (A4 = 440Hz = MIDI 69)
 def midi_to_freq(n):
     return 440.0 * (2.0 ** ((n - 69) / 12.0))
 
 # Generate sine wave sample for a given frequency and duration
+# with fade-out to prevent click/pop at note end
 def make_sine(freq_hz, duration_s):
     nsamples = int(SAMPLE_RATE * duration_s)
-    if nsamples == 0:
-        nsamples = 1
+    if nsamples < 16:
+        nsamples = 16
     buf = array.array("h", [0]) * nsamples
     step = 2.0 * math.pi * freq_hz / SAMPLE_RATE
+    fade_ns = min(FADE_SAMPLES, nsamples // 4)
     for i in range(nsamples):
-        buf[i] = int(math.sin(step * i) * TONE_VOLUME)
+        # Fade-in over 16 samples
+        if i < 16:
+            env = i / 16.0
+        elif i >= nsamples - fade_ns:
+            env = (nsamples - i) / float(fade_ns)
+        else:
+            env = 1.0
+        buf[i] = int(math.sin(step * i) * TONE_VOLUME * env)
     return audiocore.RawSample(buf, sample_rate=SAMPLE_RATE)
 
 # Generate silence
 def make_silence(duration_s):
     nsamples = int(SAMPLE_RATE * duration_s)
-    if nsamples == 0:
-        nsamples = 1
+    if nsamples < 4:
+        nsamples = 4
     buf = array.array("h", [0]) * nsamples
     return audiocore.RawSample(buf, sample_rate=SAMPLE_RATE)
 
@@ -358,32 +368,36 @@ def play_song(song_idx):
     status_label.text = "Playing"
     
     # Pre-cache silence (used between notes)
-    silence = make_silence(0.04)
+    gap = 0.02  # reduced gap for legato feel
     
     for ni, (midi_note, beats) in enumerate(notes):
-        # Check for user input during playback
         ev = read_enc()
-        if ev == 99:  # Push = pause/stop
+        if ev == 99:
             playing = False
             return False
-        if ev == 98:  # KEY0 = skip
+        if ev == 98:
             playing = False
-            return False  # caller will advance to next song
+            return False
         
-        # Update progress
         progress = ni / total_notes
         draw_progress(progress)
         
-        # Play note or rest
-        if midi_note > 20:  # valid note
+        if midi_note > 20:
             duration_s = beats * BEAT_DURATION
-            # Shorten slightly for articulation
-            play_s = duration_s * 0.9
+            play_s = duration_s * 0.95  # near full duration, fade does the rest
             tone = make_sine(midi_to_freq(midi_note), play_s)
             audio.play(tone)
-            time.sleep(play_s)
-            audio.stop()
-        time.sleep(0.04)  # slight gap between notes
+            # Wait for tone to finish naturally (no audio.stop())
+            while audio.playing:
+                time.sleep(0.01)
+                # Check input during playback
+                ev2 = read_enc()
+                if ev2 == 99 or ev2 == 98:
+                    audio.stop()
+                    playing = False
+                    return False
+        
+        time.sleep(gap)  # small gap between notes
     
     draw_progress(1)
     return True  # completed
