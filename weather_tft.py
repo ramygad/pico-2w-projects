@@ -1,18 +1,22 @@
-# Pico 2W — Weather Forecast on ST7789 TFT (v2 — Enhanced UI)
+# Pico 2W — Weather Forecast on ST7789 TFT (v3 — Multi-City)
 # ================================================================
-# Connects to Wi-Fi, fetches Open-Meteo weather for Mainz, Germany,
-# and displays on 2.4" 320x240 ST7789 TFT.
+# Connects to Wi-Fi, fetches Open-Meteo weather for multiple cities,
+# displayed on 2.4" 320x240 ST7789 TFT.
 #
 # Features:
+#   - EC11 rotary encoder to switch between cities
+#   - Cities: Mainz (DE), Alexandria (EG), Cairo (EG), Amsterdam (NL)
 #   - Current: temp, feels-like, humidity, wind, UV, pressure
 #   - 6-hour hourly forecast bar chart with temp-colored bars
 #   - Sunrise/sunset times
 #   - 2-day daily forecast with rain probability
 #   - Temperature-based color coding
 #   - Day/night indicator
-#   - Auto-refresh every 5 minutes
+#   - Auto-refresh every 5 minutes or on encoder push
 #
-# Pinout: SCK=GP2, MOSI=GP3, CS=GP4, DC=GP5, RES=GP6
+# Pinout:
+#   TFT: SCK=GP2, MOSI=GP3, CS=GP4, DC=GP5, RES=GP6
+#   EC11: A=GP7, B=GP8, Push=GP9
 #
 # Dependencies (copy to CIRCUITPY):
 #   adafruit_st7789.py  ->  /lib/
@@ -27,6 +31,7 @@ import board
 import busio
 import displayio
 import terminalio
+import digitalio
 import wifi
 import socketpool
 import ssl
@@ -43,6 +48,10 @@ TFT_CS   = board.GP4
 TFT_DC   = board.GP5
 TFT_RES  = board.GP6
 
+ENC_A    = board.GP7
+ENC_B    = board.GP8
+ENC_PUSH = board.GP9
+
 WIDTH  = 320
 HEIGHT = 240
 
@@ -55,6 +64,16 @@ GRAY   = 0x888888
 GREEN  = 0x00FF00
 RED    = 0xFF4444
 BLUE   = 0x4488FF
+
+# ── Cities ───────────────────────────────────────────────────────────────
+CITIES = [
+    {"name": "Mainz, Germany",        "lat": 49.99, "lon": 8.25,  "tz": "Europe/Berlin"},
+    {"name": "Alexandria, Egypt",     "lat": 31.20, "lon": 29.92, "tz": "Africa/Cairo"},
+    {"name": "Cairo, Egypt",          "lat": 30.04, "lon": 31.24, "tz": "Africa/Cairo"},
+    {"name": "Amsterdam, Netherlands", "lat": 52.37, "lon": 4.90,  "tz": "Europe/Amsterdam"},
+]
+N_CITIES = len(CITIES)
+current_city = 0
 
 # ── WMO weather-code descriptions ───────────────────────────────────────
 WMO = {
@@ -86,7 +105,7 @@ def temp_color(t):
     return ORANGE
 
 def make_bar(x, y, w, h, color):
-    """Create a filled rectangle as a TileGrid (no vectorio needed)."""
+    """Create a filled rectangle as a TileGrid."""
     bmp = displayio.Bitmap(max(1, w), max(1, h), 1)
     pal = displayio.Palette(1)
     pal[0] = color
@@ -102,7 +121,84 @@ display_bus = FourWire(spi, command=TFT_DC, chip_select=TFT_CS, reset=TFT_RES)
 display = ST7789(display_bus, width=WIDTH, height=HEIGHT, rotation=270)
 
 # ══════════════════════════════════════════════════════════════════════
-#  2. Build UI Layout
+#  2. Initialise EC11 Encoder
+# ══════════════════════════════════════════════════════════════════════
+enc_a = digitalio.DigitalInOut(ENC_A)
+enc_a.direction = digitalio.Direction.INPUT
+enc_a.pull = digitalio.Pull.UP
+
+enc_b = digitalio.DigitalInOut(ENC_B)
+enc_b.direction = digitalio.Direction.INPUT
+enc_b.pull = digitalio.Pull.UP
+
+enc_push = digitalio.DigitalInOut(ENC_PUSH)
+enc_push.direction = digitalio.Direction.INPUT
+enc_push.pull = digitalio.Pull.UP
+
+print("Encoder ready (A=GP7, B=GP8, Push=GP9)")
+
+# Encoder state — quadrature state machine
+# EC11 has 2 full quadrature cycles per detent click.
+# We track state transitions and only count a completed cycle.
+# States based on (A,B): 00=0, 01=1, 11=2, 10=3
+enc_state = 0
+for _ in range(10):
+    a0 = enc_a.value
+    b0 = enc_b.value
+    enc_state = (a0 << 1) | b0
+    time.sleep(0.001)
+
+enc_push_prev = enc_push.value
+last_push_time = 0
+last_rot_time = 0
+ROT_DEBOUNCE = 0.15  # 150ms between rotation events
+
+# Quadrature transition table: state -> next-state -> direction
+# CW sequence: 0->2->3->1->0 (or 0->1->3->2->0 depending on wiring)
+# We use a simple approach: count 4 state changes = 1 detent
+enc_counter = 0
+enc_last_state = enc_state
+
+def read_encoder():
+    """Poll EC11 encoder using quadrature state tracking.
+    Returns -1 (CCW), +1 (CW), 0 (no movement), 99 (push)."""
+    global enc_last_state, enc_counter, enc_push_prev, last_push_time, last_rot_time
+
+    now = time.monotonic()
+
+    # ── Rotation detection (quadrature state machine) ──────────────
+    a_val = enc_a.value
+    b_val = enc_b.value
+    cur_state = (a_val << 1) | b_val
+
+    if cur_state != enc_last_state:
+        enc_last_state = cur_state
+        enc_counter += 1
+        # A full EC11 detent = 4 state transitions
+        if enc_counter >= 4:
+            enc_counter = 0
+            if (now - last_rot_time) > ROT_DEBOUNCE:
+                last_rot_time = now
+                # Determine direction from final state vs A
+                # If A != B at the end, CW; if A == B, CCW
+                if a_val != b_val:
+                    return 1   # CW
+                else:
+                    return -1  # CCW
+
+    # ── Push button detection (debounced) ──────────────────────────
+    push_val = enc_push.value
+    if push_val != enc_push_prev:
+        enc_push_prev = push_val
+        if not push_val:  # pressed (pulled low)
+            if now - last_push_time > 0.3:
+                last_push_time = now
+                return 99
+
+    return 0
+
+# ══════════════════════════════════════════════════════════════════════
+#  3. Build UI Layout
 # ══════════════════════════════════════════════════════════════════════
 
 def make_label(text, x, y, color=WHITE, scale=1):
@@ -114,8 +210,12 @@ main_group = displayio.Group()
 status_bar = make_label("", 0, 0, GRAY, scale=1)
 main_group.append(status_bar)
 
-# ── Title ───────────────────────────────────────────────────────────────
-title = make_label("Mainz, Germany", WIDTH // 2 - 72, 18, CYAN, scale=2)
+# ── City selector hint (top right) ──────────────────────────────────────
+city_hint = make_label("< turn >", 250, 0, GRAY, scale=1)
+main_group.append(city_hint)
+
+# ── Title (city name) ───────────────────────────────────────────────────
+title = make_label(CITIES[0]["name"], 5, 18, CYAN, scale=2)
 main_group.append(title)
 
 # ── Big temperature + condition ─────────────────────────────────────────
@@ -173,7 +273,7 @@ display.root_group = main_group
 print("TFT ready.")
 
 # ══════════════════════════════════════════════════════════════════════
-#  3. Wi-Fi + Weather
+#  4. Wi-Fi + Weather
 # ══════════════════════════════════════════════════════════════════════
 print("Connecting to Wi-Fi...")
 status_bar.text = "Wi-Fi..."
@@ -197,17 +297,20 @@ if not wifi_ok:
 pool = socketpool.SocketPool(wifi.radio)
 session = adafruit_requests.Session(pool, ssl.create_default_context())
 
-URL = (
-    "https://api.open-meteo.com/v1/forecast?"
-    "latitude=49.99&longitude=8.25"
-    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
-    "weather_code,wind_speed_10m,is_day,uv_index,pressure_msl"
-    "&hourly=temperature_2m,weather_code,precipitation_probability"
-    "&daily=temperature_2m_max,temperature_2m_min,weather_code,"
-    "sunrise,sunset,uv_index_max,precipitation_probability_max"
-    "&timezone=Europe%2FBerlin"
-    "&forecast_days=2"
-)
+def build_url(city):
+    """Build Open-Meteo URL for a city."""
+    tz_enc = city["tz"].replace("/", "%2F")
+    return (
+        "https://api.open-meteo.com/v1/forecast?"
+        f"latitude={city['lat']}&longitude={city['lon']}"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+        "weather_code,wind_speed_10m,is_day,uv_index,pressure_msl"
+        "&hourly=temperature_2m,weather_code,precipitation_probability"
+        "&daily=temperature_2m_max,temperature_2m_min,weather_code,"
+        "sunrise,sunset,uv_index_max,precipitation_probability_max"
+        f"&timezone={tz_enc}"
+        "&forecast_days=2"
+    )
 
 # Bar chart geometry
 BAR_W       = 30
@@ -219,19 +322,14 @@ BAR_START_X = 50
 
 def update_bars(temps):
     """Rebuild the hourly temperature bar chart."""
-    # Remove old bars
     while len(chart_group) > 0:
         chart_group.pop()
-
     if not temps:
         return
-
     tmin = min(temps)
     tmax = max(temps)
     trange = max(1.0, tmax - tmin)
-
     for i, t in enumerate(temps):
-        # Map temp to bar height (4..BAR_MAX_H)
         h = int((t - tmin) / trange * (BAR_MAX_H - 6) + 4)
         h = max(4, min(BAR_MAX_H, h))
         x = BAR_START_X + i * (BAR_W + BAR_GAP)
@@ -239,12 +337,15 @@ def update_bars(temps):
         bar = make_bar(x, y, BAR_W, h, temp_color(t))
         chart_group.append(bar)
 
-def update_weather():
-    """Fetch weather from Open-Meteo and update all display labels."""
-    print("Fetching weather...")
-    status_bar.text = "Updating..."
+def update_weather(city_idx):
+    """Fetch weather from Open-Meteo for the given city and update display."""
+    city = CITIES[city_idx]
+    print(f"Fetching weather for {city['name']}...")
+    status_bar.text = f"Updating {city['name'][:12]}..."
+    title.text = city["name"]
     try:
-        resp = session.get(URL)
+        url = build_url(city)
+        resp = session.get(url)
         j = resp.json()
         resp.close()
 
@@ -273,15 +374,14 @@ def update_weather():
 
         # ── Sun + rain info ────────────────────────────────────────
         sunrise = daily["sunrise"][0][-5:]   # "05:30"
-        sunset  = daily["sunset"][0][-5:]   # "21:34"
+        sunset  = daily["sunset"][0][-5:]    # "21:34"
         rain0   = daily["precipitation_probability_max"][0]
         details2.text = f"Sunrise {sunrise}  Sunset {sunset}  Rain:{rain0}%"
 
         # ── Hourly forecast (next 6 hours from current time) ───────
-        current_time = cur["time"]           # "2026-07-11T19:00"
+        current_time = cur["time"]
         hour_list    = hourly["time"]
 
-        # Find the index of the current hour (or next hour)
         start_idx = 0
         for i, ht in enumerate(hour_list):
             if ht >= current_time:
@@ -294,7 +394,7 @@ def update_weather():
             idx = start_idx + i
             t = hourly["temperature_2m"][idx]
             c = hourly["weather_code"][idx]
-            h_time = hour_list[idx][-5:]      # "20:00"
+            h_time = hour_list[idx][-5:]
 
             temps_hourly.append(t)
             x = BAR_START_X + i * (BAR_W + BAR_GAP)
@@ -309,7 +409,6 @@ def update_weather():
             cond_labels[i].text = WMO_SHORT.get(c, "?")
             cond_labels[i].x = x + 2
 
-        # Hide unused label slots
         for i in range(n, N_HOURS):
             hour_labels[i].text = ""
             temp_labels[i].text = ""
@@ -331,7 +430,8 @@ def update_weather():
         # ── Status bar ─────────────────────────────────────────────
         is_day  = cur.get("is_day", 1)
         time_str = current_time[-5:]
-        status_bar.text = f"WiFi OK  {time_str}  {'Day' if is_day else 'Night'}"
+        city_short = city["name"].split(",")[0]
+        status_bar.text = f"WiFi OK  {city_short} {time_str}  {'Day' if is_day else 'Night'}"
 
         print("Display updated.")
         return True
@@ -339,16 +439,45 @@ def update_weather():
     except Exception as e:
         print(f"Fetch error: {e}")
         status_bar.text = "Error!"
+        cond_text.text = "Connection"
+        temp_text.text = "FAIL"
         return False
 
 # ══════════════════════════════════════════════════════════════════════
-#  4. Initial fetch + Main loop
+#  5. Main loop — encoder polling + auto-refresh
 # ══════════════════════════════════════════════════════════════════════
-update_weather()
+print("Starting main loop. Turn encoder to switch cities, push to refresh.")
 
-REFRESH_SEC = 300  # 5 minutes
+# Initial weather fetch
+update_weather(current_city)
+
+REFRESH_SEC = 300  # 5 minutes auto-refresh
+last_refresh = time.monotonic()
 
 while True:
-    for _ in range(REFRESH_SEC):
-        time.sleep(1)
-    update_weather()
+    # Poll encoder (non-blocking, fast)
+    enc = read_encoder()
+
+    if enc == 1:  # CW — next city
+        current_city = (current_city + 1) % N_CITIES
+        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
+        update_weather(current_city)
+        last_refresh = time.monotonic()
+
+    elif enc == -1:  # CCW — previous city
+        current_city = (current_city - 1) % N_CITIES
+        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
+        update_weather(current_city)
+        last_refresh = time.monotonic()
+
+    elif enc == 99:  # Push — force refresh
+        print("Push button — refreshing current city")
+        update_weather(current_city)
+        last_refresh = time.monotonic()
+
+    # Auto-refresh check
+    if time.monotonic() - last_refresh >= REFRESH_SEC:
+        update_weather(current_city)
+        last_refresh = time.monotonic()
+
+    time.sleep(0.01)  # Small delay to avoid busy-spin
