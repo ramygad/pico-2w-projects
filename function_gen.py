@@ -74,6 +74,7 @@ current_wave = 0       # 0=sine, 1=square, 2=triangle, 3=sawtooth
 current_freq = 16000.0  # Hz — starts at 16kHz
 current_amp  = 0.5     # 0.0 – 1.0
 active_param = "freq"  # "freq" or "amp"
+generator_on = True    # KEY0 toggles output ON/OFF
 
 # ══════════════════════════════════════════════════════════════════════
 #  1. Initialise I2S Audio
@@ -242,8 +243,12 @@ main_group.append(info1)
 # ── Controls hint ───────────────────────────────────────────────────────
 hint1 = make_label("Turn: adjust    Push: toggle", 10, 170, GRAY, scale=1)
 main_group.append(hint1)
-hint2 = make_label("KEY0: wave type", 10, 182, GRAY, scale=1)
+hint2 = make_label("KEY0: ON/OFF", 10, 182, GRAY, scale=1)
 main_group.append(hint2)
+
+# ── ON/OFF status indicator ──────────────────────────────────────────────
+status_indicator = make_label("ON", 265, 0, GREEN, scale=1)
+main_group.append(status_indicator)
 
 # ── Active param indicator ──────────────────────────────────────────────
 active_indicator = make_label(">", 0, 94, YELLOW, scale=3)  # placed beside active param
@@ -365,10 +370,19 @@ def update_display():
     # Waveform visualization
     draw_waveform()
 
+    # ON/OFF status
+    if generator_on:
+        status_indicator.text = "ON"
+        status_indicator.color = GREEN
+    else:
+        status_indicator.text = "OFF"
+        status_indicator.color = RED
+
 def apply_audio():
-    """Generate and play the current waveform through the DACs."""
+    """Generate and play the current waveform through the DACs.
+    Respects generator_on — stops audio when OFF."""
     global audio_i2s
-    if audio_i2s is None or current_amp <= 0:
+    if audio_i2s is None or current_amp <= 0 or not generator_on:
         if audio_i2s is not None:
             try:
                 audio_i2s.stop()
@@ -450,7 +464,7 @@ def adjust_amp(delta, speed=1):
 #  8. Main Loop
 # ══════════════════════════════════════════════════════════════════════
 
-print("Starting main loop. Turn encoder to adjust, push to toggle param, KEY0 for wave.")
+print("Starting main loop. Turn encoder to adjust, push to toggle param, KEY0 for ON/OFF.")
 
 # Initial render + audio
 draw_waveform()
@@ -486,11 +500,11 @@ while True:
         need_display_update = True
         print(f"Active: {active_param}")
 
-    elif event == 98:  # KEY0 — cycle waveform type
-        current_wave = (current_wave + 1) % N_WAVES
+    elif event == 98:  # KEY0 — toggle generator ON/OFF
+        generator_on = not generator_on
         need_display_update = True
         need_audio_update = True
-        print(f"Wave: {WAVEFORMS[current_wave]}")
+        print(f"Generator: {'ON' if generator_on else 'OFF'}")
 
     if need_display_update:
         update_display()
