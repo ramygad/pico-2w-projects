@@ -161,15 +161,13 @@ while True:
     ev = rd()
     
     if ev == 1:  # Next GIF
-        if not playing:
-            current_gif = (current_gif + 1) % len(gif_files)
-            load_gif(current_gif)
-            playing = True
+        current_gif = (current_gif + 1) % len(gif_files)
+        load_gif(current_gif)
+        playing = True
     elif ev == -1:  # Previous GIF
-        if not playing:
-            current_gif = (current_gif - 1) % len(gif_files)
-            load_gif(current_gif)
-            playing = True
+        current_gif = (current_gif - 1) % len(gif_files)
+        load_gif(current_gif)
+        playing = True
     elif ev == 99:  # Toggle play/pause
         playing = not playing
     elif ev == 98:  # Restart
