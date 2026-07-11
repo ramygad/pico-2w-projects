@@ -64,9 +64,9 @@ BLUE     = 0x4488FF
 PURPLE   = 0xAA44FF
 
 # ── Audio ───────────────────────────────────────────────────────────────
-SAMPLE_RATE = 44100
-TONE_VOLUME = 12000  # 0-32767 (reduced to avoid clipping)
-FADE_SAMPLES = 128   # fade out over this many samples to avoid pop
+SAMPLE_RATE = 32000
+TONE_VOLUME = 12000  # 0-32767
+FADE_SAMPLES = 64    # fade samples for click-free note ends
 
 # MIDI note frequencies (A4 = 440Hz = MIDI 69)
 def midi_to_freq(n):
@@ -105,7 +105,18 @@ def make_silence(duration_s):
 # note=0 = rest. Tempo = BPM. Beat = quarter note.
 
 TEMPO = 120
-BEAT_DURATION = 60.0 / TEMPO
+# ── Playback control ────────────────────────────────────────────────────
+PLAY_SPEED = 1.3       # 1.0 = normal, >1 = faster
+LOOP_MODE = True        # auto-repeat song
+
+# Speed options (encoder cycles through these)
+SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.3, 1.5, 2.0, 3.0]
+SPEED_NAMES = ["0.5x", "0.75x", "1.0x", "1.3x", "1.5x", "2.0x", "3.0x"]
+
+def get_beat_duration():
+    return 60.0 / TEMPO / PLAY_SPEED
+
+BEAT_DURATION = get_beat_duration()
 
 def b(beats):
     """Convert beats to seconds."""
@@ -275,9 +286,17 @@ g = displayio.Group()
 # Title
 g.append(L("MELODY PLAYER", 5, 4, CYAN, scale=2))
 
-# Status
+# Status line
 status_label = L("", 5, 22, GRAY, scale=1)
 g.append(status_label)
+
+# Speed indicator
+speed_label = L("1.3x", 250, 22, YELLOW, scale=1)
+g.append(speed_label)
+
+# Loop indicator
+loop_label = L("🔁", 290, 22, GREEN, scale=1)
+g.append(loop_label)
 
 # Play/Pause icon
 playing_icon = L("", 290, 4, GREEN, scale=2)
@@ -319,7 +338,7 @@ g.append(prog_sprite)
 
 # Hints
 g.append(L("Turn: select  Push: play/pause", 10, 230, DIM_GRAY, scale=1))
-g.append(L("KEY0: skip", 10, 240, DIM_GRAY, scale=1))
+g.append(L("KEY0: loop on/off", 10, 240, DIM_GRAY, scale=1))
 
 display.root_group = g
 print("TFT ready.")
@@ -371,33 +390,51 @@ def play_song(song_idx):
     gap = 0.02  # reduced gap for legato feel
     
     for ni, (midi_note, beats) in enumerate(notes):
+        # Check for speed change during playback
         ev = read_enc()
-        if ev == 99:
+        if ev == 1:
+            # Speed up
+            spd_idx = SPEED_OPTIONS.index(PLAY_SPEED) if PLAY_SPEED in SPEED_OPTIONS else 3
+            spd_idx = min(spd_idx + 1, len(SPEED_OPTIONS) - 1)
+            PLAY_SPEED = SPEED_OPTIONS[spd_idx]
+            speed_label.text = SPEED_NAMES[spd_idx]
+            print(f"Speed: {PLAY_SPEED}x")
+        elif ev == -1:
+            # Slow down
+            spd_idx = SPEED_OPTIONS.index(PLAY_SPEED) if PLAY_SPEED in SPEED_OPTIONS else 3
+            spd_idx = max(spd_idx - 1, 0)
+            PLAY_SPEED = SPEED_OPTIONS[spd_idx]
+            speed_label.text = SPEED_NAMES[spd_idx]
+            print(f"Speed: {PLAY_SPEED}x")
+        elif ev == 99:
             playing = False
             return False
-        if ev == 98:
+        elif ev == 98:
             playing = False
             return False
         
+        bd = get_beat_duration()
         progress = ni / total_notes
         draw_progress(progress)
         
         if midi_note > 20:
-            duration_s = beats * BEAT_DURATION
-            play_s = duration_s * 0.95  # near full duration, fade does the rest
+            duration_s = beats * bd
+            play_s = duration_s * 0.95
             tone = make_sine(midi_to_freq(midi_note), play_s)
-            audio.play(tone)
-            # Wait for tone to finish naturally (no audio.stop())
-            while audio.playing:
-                time.sleep(0.01)
-                # Check input during playback
-                ev2 = read_enc()
-                if ev2 == 99 or ev2 == 98:
-                    audio.stop()
-                    playing = False
-                    return False
+            audio.play(tone, loop=False)
+            # Use time.sleep for exact duration instead of polling
+            # Check for user input at the start of each note
+            time.sleep(play_s)
+            audio.stop()
         
-        time.sleep(gap)  # small gap between notes
+        # Check input between notes
+        ev2 = read_enc()
+        if ev2 == 99 or ev2 == 98:
+            audio.stop()
+            playing = False
+            return False
+        
+        time.sleep(gap)
     
     draw_progress(1)
     return True  # completed
@@ -408,9 +445,14 @@ def play_song(song_idx):
 
 current_song = 0
 playing = False
+speed_idx = 3  # index in SPEED_OPTIONS (1.3x)
+PLAY_SPEED = SPEED_OPTIONS[speed_idx]
 
 print("Starting. Turn to select, push to play.")
 status_label.text = "Ready"
+speed_label.text = SPEED_NAMES[speed_idx]
+loop_label.text = "🔁" if LOOP_MODE else "⏹"
+loop_label.color = GREEN if LOOP_MODE else GRAY
 playing_icon.text = "⏹"
 update_song_list(0)
 
@@ -440,28 +482,36 @@ while True:
         elif ev == 99:  # Push — play
             playing = True
             print(f"Playing: {PLAYLIST[current_song][0]}")
-            completed = play_song(current_song)
-            if completed:
-                # Auto-advance to next song
-                current_song = (current_song + 1) % len(PLAYLIST)
-                update_song_list(current_song)
-                playing_icon.text = "⏹"
-                status_label.text = "Done"
+            while playing:
+                completed = play_song(current_song)
+                if completed and LOOP_MODE:
+                    # Loop — play same song again
+                    current_song = current_song  # keep same
+                    song_title.text = PLAYLIST[current_song][0]
+                    artist_label.text = PLAYLIST[current_song][1]
+                    status_label.text = "Looping..."
+                elif completed:
+                    # No loop, advance to next
+                    current_song = (current_song + 1) % len(PLAYLIST)
+                    update_song_list(current_song)
+                    playing_icon.text = "⏹"
+                    status_label.text = "Done"
+                    draw_progress(0)
+                    playing = False
+                else:
+                    # Stopped by user
+                    playing_icon.text = "⏸"
+                    status_label.text = "Paused"
+                    playing = False
+                song_title.text = ""
+                artist_label.text = ""
                 draw_progress(0)
-            else:
-                # Stopped by user
-                playing_icon.text = "⏸"
-                status_label.text = "Paused"
             playing = False
 
-        elif ev == 98:  # KEY0 — skip (when not playing, just select next)
-            if (now - last_skip_t) > 0.5:
-                current_song = (current_song + 1) % len(PLAYLIST)
-                update_song_list(current_song)
-                last_skip_t = now
-    else:
-        # Playing — the play_song function handles input internally
-        # If we get here, playback ended
-        pass
+        elif ev == 98:  # KEY0 — toggle loop mode
+            LOOP_MODE = not LOOP_MODE
+            loop_label.text = "🔁" if LOOP_MODE else "⏹"
+            loop_label.color = GREEN if LOOP_MODE else GRAY
+            print(f"Loop: {LOOP_MODE}")
 
-    time.sleep(0.01)
+        time.sleep(0.01)
