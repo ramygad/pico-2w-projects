@@ -498,21 +498,38 @@ update_weather(current_city)
 REFRESH_SEC = 300  # 5 minutes auto-refresh
 last_refresh = time.monotonic()
 
+# Speed-aware rotation for city switching
+ROT_SPEED_BINS = [(0.5, 1), (0.3, 2), (0.15, 3), (0.075, N_CITIES), (0.0, N_CITIES)]
+last_rot_event = 0
+
+def city_step():
+    """Return number of cities to skip based on rotation speed. 1 = normal, up to N_CITIES."""
+    global last_rot_event
+    now = time.monotonic()
+    dt = now - last_rot_event
+    last_rot_event = now
+    for threshold, skip in ROT_SPEED_BINS:
+        if dt > threshold:
+            return skip
+    return N_CITIES
+
 while True:
     # Poll encoder (non-blocking, fast)
     enc = read_encoder()
 
     if enc == 1:  # CW — next city
+        s = city_step()
         play_beep(BEEP_CW)
-        current_city = (current_city + 1) % N_CITIES
-        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
+        current_city = (current_city + s) % N_CITIES
+        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}  (speed={s})")
         update_weather(current_city)
         last_refresh = time.monotonic()
 
     elif enc == -1:  # CCW — previous city
+        s = city_step()
         play_beep(BEEP_CCW)
-        current_city = (current_city - 1) % N_CITIES
-        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}")
+        current_city = (current_city - s) % N_CITIES
+        print(f"Switching to city {current_city}: {CITIES[current_city]['name']}  (speed={s})")
         update_weather(current_city)
         last_refresh = time.monotonic()
 

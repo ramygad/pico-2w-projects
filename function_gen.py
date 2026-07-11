@@ -380,13 +380,29 @@ def apply_audio():
 #  7. Parameter Adjustment Logic
 # ══════════════════════════════════════════════════════════════════════
 
-def adjust_freq(delta):
-    """Adjust frequency by delta steps. Delta is +1 (CW) or -1 (CCW)."""
+# ── Speed multiplier for encoder ───────────────────────────────────────
+# Slow rotation = fine control (mult=1), fast rotation = coarse (mult up to 20)
+last_rot_event = 0
+ROT_SPEED_BINS = [(0.5, 1), (0.3, 2), (0.15, 5), (0.075, 10), (0.0, 20)]
+
+def calc_speed():
+    """Compute a multiplier from time since last rotation event."""
+    global last_rot_event
+    now = time.monotonic()
+    dt = now - last_rot_event
+    last_rot_event = now
+    for threshold, mult in ROT_SPEED_BINS:
+        if dt > threshold:
+            return mult
+    return 20
+
+def adjust_freq(delta, speed=1):
+    """Adjust frequency by delta × speed steps."""
     global current_freq
     if abs(delta) < 1:
         return
 
-    step = delta
+    step = delta * speed
     # Dynamic step size based on current frequency range
     if current_freq < 10:
         step *= 0.5
@@ -402,10 +418,10 @@ def adjust_freq(delta):
     current_freq = round(current_freq + step, 1)
     current_freq = max(FREQ_MIN, min(FREQ_MAX, current_freq))
 
-def adjust_amp(delta):
-    """Adjust amplitude by delta steps."""
+def adjust_amp(delta, speed=1):
+    """Adjust amplitude by delta × speed steps."""
     global current_amp
-    current_amp = round(current_amp + AMP_STEP * delta, 2)
+    current_amp = round(current_amp + AMP_STEP * delta * speed, 2)
     current_amp = max(AMP_MIN, min(AMP_MAX, current_amp))
 
 # ══════════════════════════════════════════════════════════════════════
@@ -426,18 +442,20 @@ while True:
     event = read_encoder_and_keys()
 
     if event == 1:  # CW — increase active param
+        s = calc_speed()
         if active_param == "freq":
-            adjust_freq(1)
+            adjust_freq(1, s)
         else:
-            adjust_amp(1)
+            adjust_amp(1, s)
         need_display_update = True
         need_audio_update = True
 
     elif event == -1:  # CCW — decrease active param
+        s = calc_speed()
         if active_param == "freq":
-            adjust_freq(-1)
+            adjust_freq(-1, s)
         else:
-            adjust_amp(-1)
+            adjust_amp(-1, s)
         need_display_update = True
         need_audio_update = True
 
