@@ -1,22 +1,26 @@
-# Pico 2W — Weather Forecast on ST7789 TFT
-# ================================================
-# Connects to Wi-Fi, fetches Open-Meteo weather
-# for Mainz, Germany, and displays on the 2.4"
-# 320x240 ST7789 TFT display.
+# Pico 2W — Weather Forecast on ST7789 TFT (v2 — Enhanced UI)
+# ================================================================
+# Connects to Wi-Fi, fetches Open-Meteo weather for Mainz, Germany,
+# and displays on 2.4" 320x240 ST7789 TFT.
+#
+# Features:
+#   - Current: temp, feels-like, humidity, wind, UV, pressure
+#   - 6-hour hourly forecast bar chart with temp-colored bars
+#   - Sunrise/sunset times
+#   - 2-day daily forecast with rain probability
+#   - Temperature-based color coding
+#   - Day/night indicator
+#   - Auto-refresh every 5 minutes
 #
 # Pinout: SCK=GP2, MOSI=GP3, CS=GP4, DC=GP5, RES=GP6
 #
 # Dependencies (copy to CIRCUITPY):
-#   adafruit_st7789.py  →  /lib/
-#   adafruit_display_text/  →  /lib/  (entire folder)
-#   wifi_config.py      →  / (root, gitignored)
-#
-# Deploy:
-#   cp weather_tft.py /d/code.py     (Windows cmd)
-#   cp adafruit_st7789.py /d/lib/
-#   cp -r adafruit_display_text /d/lib/
-#   cp wifi_config.py /d/
-# ================================================
+#   adafruit_st7789.py  ->  /lib/
+#   adafruit_display_text/  ->  /lib/  (entire folder)
+#   adafruit_requests.mpy  ->  /lib/
+#   adafruit_connection_manager.mpy  ->  /lib/
+#   wifi_config.py  ->  / (root, gitignored)
+# ================================================================
 
 import time
 import board
@@ -42,15 +46,17 @@ TFT_RES  = board.GP6
 WIDTH  = 320
 HEIGHT = 240
 
-# ── Colours ────────────────────────────────────────────────────────────
-WHITE   = 0xFFFFFF
-CYAN    = 0x00FFFF
-YELLOW  = 0xFFDD00
-ORANGE  = 0xFF8800
-GRAY    = 0x888888
-DARK_BG = 0x0A1628  # dark navy background
+# ── Colours ─────────────────────────────────────────────────────────────
+WHITE  = 0xFFFFFF
+CYAN   = 0x00FFFF
+YELLOW = 0xFFDD00
+ORANGE = 0xFF8800
+GRAY   = 0x888888
+GREEN  = 0x00FF00
+RED    = 0xFF4444
+BLUE   = 0x4488FF
 
-# ── WMO weather-code descriptions ──────────────────────────────────────
+# ── WMO weather-code descriptions ───────────────────────────────────────
 WMO = {
     0: "Clear sky",       1: "Mainly clear",    2: "Partly cloudy",
     3: "Overcast",        45: "Foggy",           48: "Rime fog",
@@ -58,23 +64,33 @@ WMO = {
     61: "Light rain",     63: "Moderate rain",   65: "Heavy rain",
     71: "Light snow",     73: "Moderate snow",   75: "Heavy snow",
     80: "Light showers",  81: "Mod showers",     82: "Heavy showers",
-    95: "Thunderstorm",   96: "T-storm + hail",  99: "Heavy T-storm + hail",
+    95: "Thunderstorm",   96: "T-storm + hail",  99: "Heavy T-storm",
 }
 
-# ── Emoji / icon map for weather codes ─────────────────────────────────
-WMO_ICON = {
-    0: "\ue24e", 1: "\ue312", 2: "\ue313",
-    3: "\ue312", 45: "\ue313", 48: "\ue313",
-    51: "\ue318", 53: "\ue318", 55: "\ue318",
-    61: "\ue318", 63: "\ue318", 65: "\ue318",
-    71: "\ue31a", 73: "\ue31a", 75: "\ue31a",
-    80: "\ue318", 81: "\ue318", 82: "\ue318",
-    95: "\ue31d", 96: "\ue31d", 99: "\ue31d",
+WMO_SHORT = {
+    0: "Clear",  1: "M.Clr", 2: "P.Cld", 3: "Ocast",
+    45: "Fog",   48: "Fog",
+    51: "L.Drz", 53: "M.Drz", 55: "D.Drz",
+    61: "L.Rn",  63: "M.Rn",  65: "H.Rn",
+    71: "L.Sn",  73: "M.Sn",  75: "H.Sn",
+    80: "L.Sh",  81: "M.Sh",  82: "H.Sh",
+    95: "T.St",  96: "T.Hl", 99: "H.T.St",
 }
 
-# WMO_ICON dictionary has hex escape sequences that may not render.
-# We'll use text descriptions instead, so the WMO_ICON map is decorative.
-# Replaced with simple ASCII markers below.
+def temp_color(t):
+    """Color-code temperature: cold=blue, mild=green, warm=yellow, hot=orange."""
+    if t < 0:   return BLUE
+    if t < 10:  return CYAN
+    if t < 20:  return GREEN
+    if t < 28:  return YELLOW
+    return ORANGE
+
+def make_bar(x, y, w, h, color):
+    """Create a filled rectangle as a TileGrid (no vectorio needed)."""
+    bmp = displayio.Bitmap(max(1, w), max(1, h), 1)
+    pal = displayio.Palette(1)
+    pal[0] = color
+    return displayio.TileGrid(bmp, pixel_shader=pal, x=x, y=y)
 
 # ══════════════════════════════════════════════════════════════════════
 #  1. Initialise TFT Display
@@ -83,9 +99,6 @@ print("Init TFT...")
 displayio.release_displays()
 spi = busio.SPI(clock=TFT_SCK, MOSI=TFT_MOSI)
 display_bus = FourWire(spi, command=TFT_DC, chip_select=TFT_CS, reset=TFT_RES)
-
-# rotation=270 gives landscape with USB connector on left
-# (adjust to 90 if text appears upside-down)
 display = ST7789(display_bus, width=WIDTH, height=HEIGHT, rotation=270)
 
 # ══════════════════════════════════════════════════════════════════════
@@ -93,40 +106,68 @@ display = ST7789(display_bus, width=WIDTH, height=HEIGHT, rotation=270)
 # ══════════════════════════════════════════════════════════════════════
 
 def make_label(text, x, y, color=WHITE, scale=1):
-    """Create a display text label."""
     return label.Label(terminalio.FONT, text=text, color=color, x=x, y=y, scale=scale)
 
 main_group = displayio.Group()
 
-# ── Status bar (Wi-Fi, refresh) ────────────────────────────────────────
+# ── Status bar (Wi-Fi status, time, day/night) ─────────────────────────
 status_bar = make_label("", 0, 0, GRAY, scale=1)
 main_group.append(status_bar)
 
-# ── Title ──────────────────────────────────────────────────────────────
-title = make_label("Mainz, Germany", WIDTH // 2 - 70, 22, CYAN, scale=2)
+# ── Title ───────────────────────────────────────────────────────────────
+title = make_label("Mainz, Germany", WIDTH // 2 - 72, 18, CYAN, scale=2)
 main_group.append(title)
 
-# ── Main weather icon / condition area ─────────────────────────────────
-cond_text = make_label("--", 10, 52, WHITE, scale=3)
-main_group.append(cond_text)
-
-# Temperature (large, prominent)
-temp_text = make_label("--", 10, 88, YELLOW, scale=3)
+# ── Big temperature + condition ─────────────────────────────────────────
+temp_text = make_label("--", 5, 44, YELLOW, scale=3)
 main_group.append(temp_text)
 
-# ── Details (vertical stack, bigger text) ──────────────────────────────
-feels_text  = make_label("Feels: --",        10, 130, WHITE, scale=2)
-humid_text  = make_label("Humidity: --",     10, 152, WHITE, scale=2)
-wind_text   = make_label("Wind: --",         10, 174, WHITE, scale=2)
-main_group.append(feels_text)
-main_group.append(humid_text)
-main_group.append(wind_text)
+cond_text = make_label("--", 120, 48, WHITE, scale=2)
+main_group.append(cond_text)
 
-# ── Forecast ───────────────────────────────────────────────────────────
-today_text     = make_label("Today:  --",    10, 205, ORANGE, scale=2)
-tomorrow_text  = make_label("Tomrw:  --",    10, 225, ORANGE, scale=2)
+# ── Details line 1 (feels, hum, wind, UV, pressure) ────────────────────
+details1 = make_label("", 5, 78, WHITE, scale=1)
+main_group.append(details1)
+
+# ── Details line 2 (sunrise, sunset, rain) ─────────────────────────────
+details2 = make_label("", 5, 92, GRAY, scale=1)
+main_group.append(details2)
+
+# ── Hourly forecast header ──────────────────────────────────────────────
+hourly_hdr = make_label("--- 6-Hour Forecast ---", 80, 108, GRAY, scale=1)
+main_group.append(hourly_hdr)
+
+# ── Hour labels (above bars) ────────────────────────────────────────────
+N_HOURS = 6
+hour_labels = []
+for i in range(N_HOURS):
+    hl = make_label("--:--", 0, 120, GRAY, scale=1)
+    main_group.append(hl)
+    hour_labels.append(hl)
+
+# ── Bar chart group (bars added/removed dynamically) ────────────────────
+chart_group = displayio.Group()
+main_group.append(chart_group)
+
+# ── Temp labels (below bars) ─────────────────────────────────────────────
+temp_labels = []
+for i in range(N_HOURS):
+    tl = make_label("--", 0, 178, YELLOW, scale=1)
+    main_group.append(tl)
+    temp_labels.append(tl)
+
+# ── Condition labels (below temp) ───────────────────────────────────────
+cond_labels = []
+for i in range(N_HOURS):
+    cl = make_label("--", 0, 192, GRAY, scale=1)
+    main_group.append(cl)
+    cond_labels.append(cl)
+
+# ── Daily forecast ───────────────────────────────────────────────────────
+today_text = make_label("Today:  --", 5, 207, ORANGE, scale=2)
+tomrw_text = make_label("Tomrw:  --", 5, 225, ORANGE, scale=2)
 main_group.append(today_text)
-main_group.append(tomorrow_text)
+main_group.append(tomrw_text)
 
 display.root_group = main_group
 print("TFT ready.")
@@ -159,11 +200,44 @@ session = adafruit_requests.Session(pool, ssl.create_default_context())
 URL = (
     "https://api.open-meteo.com/v1/forecast?"
     "latitude=49.99&longitude=8.25"
-    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
-    "&daily=temperature_2m_max,temperature_2m_min,weather_code"
+    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+    "weather_code,wind_speed_10m,is_day,uv_index,pressure_msl"
+    "&hourly=temperature_2m,weather_code,precipitation_probability"
+    "&daily=temperature_2m_max,temperature_2m_min,weather_code,"
+    "sunrise,sunset,uv_index_max,precipitation_probability_max"
     "&timezone=Europe%2FBerlin"
     "&forecast_days=2"
 )
+
+# Bar chart geometry
+BAR_W       = 30
+BAR_GAP     = 8
+BAR_TOP     = 132
+BAR_BOTTOM  = 172
+BAR_MAX_H   = BAR_BOTTOM - BAR_TOP   # 40px
+BAR_START_X = 50
+
+def update_bars(temps):
+    """Rebuild the hourly temperature bar chart."""
+    # Remove old bars
+    while len(chart_group) > 0:
+        chart_group.pop()
+
+    if not temps:
+        return
+
+    tmin = min(temps)
+    tmax = max(temps)
+    trange = max(1.0, tmax - tmin)
+
+    for i, t in enumerate(temps):
+        # Map temp to bar height (4..BAR_MAX_H)
+        h = int((t - tmin) / trange * (BAR_MAX_H - 6) + 4)
+        h = max(4, min(BAR_MAX_H, h))
+        x = BAR_START_X + i * (BAR_W + BAR_GAP)
+        y = BAR_BOTTOM - h
+        bar = make_bar(x, y, BAR_W, h, temp_color(t))
+        chart_group.append(bar)
 
 def update_weather():
     """Fetch weather from Open-Meteo and update all display labels."""
@@ -174,47 +248,97 @@ def update_weather():
         j = resp.json()
         resp.close()
 
-        cur = j["current"]
-        daily = j["daily"]
+        cur    = j["current"]
+        daily  = j["daily"]
+        hourly = j["hourly"]
 
-        # ── Current conditions ──────────────────────────
+        # ── Current conditions ─────────────────────────────────────
         code = cur["weather_code"]
         desc = WMO.get(code, f"Code {code}")
         cond_text.text = desc
 
         temp = cur["temperature_2m"]
-        temp_text.text = f"{temp:.0f}\xb0C"   # \xb0 = degree symbol
+        temp_text.text = f"{temp:.0f}\xb0C"
+        temp_text.color = temp_color(temp)
 
         feels = cur["apparent_temperature"]
-        feels_text.text = f"Feels: {feels:.0f}\xb0C"
+        hum   = cur["relative_humidity_2m"]
+        wind  = cur["wind_speed_10m"]
+        uv    = cur["uv_index"]
+        press = cur["pressure_msl"]
+        details1.text = (
+            f"Feels:{feels:.0f}\xb0C  Hum:{hum}%  Wind:{wind:.0f}km/h"
+            f"  UV:{uv:.1f}  {press:.0f}hPa"
+        )
 
-        hum = cur["relative_humidity_2m"]
-        humid_text.text = f"Humidity: {hum}%"
+        # ── Sun + rain info ────────────────────────────────────────
+        sunrise = daily["sunrise"][0][-5:]   # "05:30"
+        sunset  = daily["sunset"][0][-5:]   # "21:34"
+        rain0   = daily["precipitation_probability_max"][0]
+        details2.text = f"Sunrise {sunrise}  Sunset {sunset}  Rain:{rain0}%"
 
-        wind = cur["wind_speed_10m"]
-        wind_text.text = f"Wind: {wind:.0f} km/h"
+        # ── Hourly forecast (next 6 hours from current time) ───────
+        current_time = cur["time"]           # "2026-07-11T19:00"
+        hour_list    = hourly["time"]
 
-        # ── Daily forecast ──────────────────────────────
+        # Find the index of the current hour (or next hour)
+        start_idx = 0
+        for i, ht in enumerate(hour_list):
+            if ht >= current_time:
+                start_idx = i
+                break
+
+        n = min(N_HOURS, len(hour_list) - start_idx)
+        temps_hourly = []
+        for i in range(n):
+            idx = start_idx + i
+            t = hourly["temperature_2m"][idx]
+            c = hourly["weather_code"][idx]
+            h_time = hour_list[idx][-5:]      # "20:00"
+
+            temps_hourly.append(t)
+            x = BAR_START_X + i * (BAR_W + BAR_GAP)
+
+            hour_labels[i].text = h_time
+            hour_labels[i].x = x + 2
+
+            temp_labels[i].text = f"{t:.0f}\xb0"
+            temp_labels[i].color = temp_color(t)
+            temp_labels[i].x = x + 4
+
+            cond_labels[i].text = WMO_SHORT.get(c, "?")
+            cond_labels[i].x = x + 2
+
+        # Hide unused label slots
+        for i in range(n, N_HOURS):
+            hour_labels[i].text = ""
+            temp_labels[i].text = ""
+            cond_labels[i].text = ""
+
+        update_bars(temps_hourly)
+
+        # ── Daily forecast ──────────────────────────────────────────
         t_min0 = daily["temperature_2m_min"][0]
         t_max0 = daily["temperature_2m_max"][0]
-        today_text.text = f"Today:  {t_min0:.0f}-{t_max0:.0f}\xb0C"
+        rain0  = daily["precipitation_probability_max"][0]
+        today_text.text = f"Today:  {t_min0:.0f}-{t_max0:.0f}\xb0C  Rain:{rain0}%"
 
         t_min1 = daily["temperature_2m_min"][1]
         t_max1 = daily["temperature_2m_max"][1]
-        code1  = daily["weather_code"][1]
-        desc1  = WMO.get(code1, f"Code {code1}")
-        tomorrow_text.text = f"Tomrw:  {t_min1:.0f}-{t_max1:.0f}\xb0C"
+        rain1  = daily["precipitation_probability_max"][1]
+        tomrw_text.text = f"Tomrw:  {t_min1:.0f}-{t_max1:.0f}\xb0C  Rain:{rain1}%"
 
-        status_bar.text = f"WiFi  OK  {cur['time'][-5:]}"
+        # ── Status bar ─────────────────────────────────────────────
+        is_day  = cur.get("is_day", 1)
+        time_str = current_time[-5:]
+        status_bar.text = f"WiFi OK  {time_str}  {'Day' if is_day else 'Night'}"
+
         print("Display updated.")
         return True
 
     except Exception as e:
         print(f"Fetch error: {e}")
         status_bar.text = "Error!"
-        cond_text.text = "Connection"
-        temp_text.text = "FAIL"
-        feels_text.text = str(e)[:30]
         return False
 
 # ══════════════════════════════════════════════════════════════════════
@@ -222,7 +346,9 @@ def update_weather():
 # ══════════════════════════════════════════════════════════════════════
 update_weather()
 
+REFRESH_SEC = 300  # 5 minutes
+
 while True:
-    for _ in range(300):   # ~5 minutes (300 x ~1s sleep)
+    for _ in range(REFRESH_SEC):
         time.sleep(1)
     update_weather()
