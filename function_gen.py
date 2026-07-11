@@ -106,10 +106,21 @@ key0 = digitalio.DigitalInOut(KEY0)
 key0.direction = digitalio.Direction.INPUT
 key0.pull = digitalio.Pull.UP
 
-# Quadrature state machine
+# Quadrature state machine with transition table
+# EC11 produces 4 state transitions per detent click.
+# States based on (A,B): 00=0, 01=1, 11=2, 10=3
+
+# Direction lookup: (from_state, to_state) -> 1=CW, -1=CCW
+TRANS_TABLE = {
+    (0, 1): 1,   (0, 2): -1,
+    (1, 0): -1,  (1, 3): 1,
+    (2, 0): 1,   (2, 3): -1,
+    (3, 1): -1,  (3, 2): 1,
+}
+
 enc_state = (enc_a.value << 1) | enc_b.value
 enc_last_state = enc_state
-enc_counter = 0
+enc_counter = 0  # accumulates direction; emit event at |count| >= 4
 enc_push_prev = enc_push.value
 key0_prev = key0.value
 
@@ -127,18 +138,21 @@ def read_encoder_and_keys():
 
     now = time.monotonic()
 
-    # ── Rotation ────────────────────────────────────────────────────
+    # ── Rotation (quadrature transition table) ──────────────────────
     a_val = enc_a.value
     b_val = enc_b.value
     cur_state = (a_val << 1) | b_val
     if cur_state != enc_last_state:
+        key = (enc_last_state, cur_state)
+        direction = TRANS_TABLE.get(key, 0)
         enc_last_state = cur_state
-        enc_counter += 1
-        if enc_counter >= 4:
-            enc_counter = 0
-            if (now - last_rot_time) > ROT_DEBOUNCE:
-                last_rot_time = now
-                return -1 if a_val == b_val else 1
+        if direction != 0:
+            enc_counter += direction
+            if abs(enc_counter) >= 4:
+                enc_counter = 0
+                if (now - last_rot_time) > ROT_DEBOUNCE:
+                    last_rot_time = now
+                    return direction  # 1=CW, -1=CCW
 
     # ── Push button ─────────────────────────────────────────────────
     push_val = enc_push.value

@@ -142,54 +142,49 @@ enc_push.pull = digitalio.Pull.UP
 
 print("Encoder ready (A=GP7, B=GP8, Push=GP9)")
 
-# Encoder state — quadrature state machine
+# Encoder state — quadrature state machine with transition table
 # EC11 has 2 full quadrature cycles per detent click.
-# We track state transitions and only count a completed cycle.
 # States based on (A,B): 00=0, 01=1, 11=2, 10=3
-enc_state = 0
-for _ in range(10):
-    a0 = enc_a.value
-    b0 = enc_b.value
-    enc_state = (a0 << 1) | b0
-    time.sleep(0.001)
 
+# Direction lookup: (from_state, to_state) -> 1=CW, -1=CCW
+TRANS_TABLE = {
+    (0, 1): 1,   (0, 2): -1,
+    (1, 0): -1,  (1, 3): 1,
+    (2, 0): 1,   (2, 3): -1,
+    (3, 1): -1,  (3, 2): 1,
+}
+
+enc_state = (enc_a.value << 1) | enc_b.value
+enc_last_state = enc_state
+enc_counter = 0  # accumulates direction; emit event at |count| >= 4
 enc_push_prev = enc_push.value
 last_push_time = 0
 last_rot_time = 0
 ROT_DEBOUNCE = 0.15  # 150ms between rotation events
 
-# Quadrature transition table: state -> next-state -> direction
-# CW sequence: 0->2->3->1->0 (or 0->1->3->2->0 depending on wiring)
-# We use a simple approach: count 4 state changes = 1 detent
-enc_counter = 0
-enc_last_state = enc_state
-
 def read_encoder():
-    """Poll EC11 encoder using quadrature state tracking.
+    """Poll EC11 encoder using quadrature transition table.
     Returns -1 (CCW), +1 (CW), 0 (no movement), 99 (push)."""
     global enc_last_state, enc_counter, enc_push_prev, last_push_time, last_rot_time
 
     now = time.monotonic()
 
-    # ── Rotation detection (quadrature state machine) ──────────────
+    # ── Rotation detection (transition table) ────────────────────────
     a_val = enc_a.value
     b_val = enc_b.value
     cur_state = (a_val << 1) | b_val
 
     if cur_state != enc_last_state:
+        key = (enc_last_state, cur_state)
+        direction = TRANS_TABLE.get(key, 0)
         enc_last_state = cur_state
-        enc_counter += 1
-        # A full EC11 detent = 4 state transitions
-        if enc_counter >= 4:
-            enc_counter = 0
-            if (now - last_rot_time) > ROT_DEBOUNCE:
-                last_rot_time = now
-                # Determine direction from final state vs A
-                # If A != B at the end, CW; if A == B, CCW
-                if a_val != b_val:
-                    return 1   # CW
-                else:
-                    return -1  # CCW
+        if direction != 0:
+            enc_counter += direction
+            if abs(enc_counter) >= 4:
+                enc_counter = 0
+                if (now - last_rot_time) > ROT_DEBOUNCE:
+                    last_rot_time = now
+                    return direction  # 1=CW, -1=CCW
 
     # ── Push button detection (debounced) ──────────────────────────
     push_val = enc_push.value
