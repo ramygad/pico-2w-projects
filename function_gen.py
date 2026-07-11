@@ -71,7 +71,7 @@ N_WAVES = len(WAVEFORMS)
 
 # ── Current state ────────────────────────────────────────────────────────
 current_wave = 0       # 0=sine, 1=square, 2=triangle, 3=sawtooth
-current_freq = 440.0   # Hz
+current_freq = 16000.0  # Hz — starts at 16kHz
 current_amp  = 0.5     # 0.0 – 1.0
 active_param = "freq"  # "freq" or "amp"
 
@@ -127,7 +127,7 @@ key0_prev = key0.value
 last_rot_time = 0
 last_push_time = 0
 last_key0_time = 0
-ROT_DEBOUNCE = 0.15
+ROT_DEBOUNCE = 0.01   # 10ms — just enough for switch contact settle
 PUSH_DEBOUNCE = 0.3
 
 def read_encoder_and_keys():
@@ -215,7 +215,7 @@ wave_sprite = displayio.TileGrid(wave_bitmap, pixel_shader=wave_palette, x=WAVE_
 main_group.append(wave_sprite)
 
 # ── Frequency display ───────────────────────────────────────────────────
-freq_label = make_label("Freq: 440.0 Hz", 10, 94, YELLOW, scale=3)
+freq_label = make_label("Freq: 16000.0 Hz", 10, 94, YELLOW, scale=3)
 main_group.append(freq_label)
 
 # ── Amplitude display ───────────────────────────────────────────────────
@@ -381,12 +381,15 @@ def apply_audio():
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Speed multiplier for encoder ───────────────────────────────────────
-# Slow rotation = fine control (mult=1), fast rotation = coarse (mult up to 20)
+# Measures time between detent events. With ROT_DEBOUNCE=10ms, the
+# event rate accurately reflects physical rotation speed.
+# Thresholds: >300ms/detent=1×, 120-300ms=3×, 60-120ms=8×,
+#             30-60ms=20×, <30ms=50×
 last_rot_event = 0
-ROT_SPEED_BINS = [(0.5, 1), (0.3, 2), (0.15, 5), (0.075, 10), (0.0, 20)]
+ROT_SPEED_BINS = [(0.30, 1), (0.12, 3), (0.06, 8), (0.03, 20), (0.0, 50)]
 
 def calc_speed():
-    """Compute a multiplier from time since last rotation event."""
+    """Compute multiplier from time since last rotation event."""
     global last_rot_event
     now = time.monotonic()
     dt = now - last_rot_event
@@ -394,7 +397,7 @@ def calc_speed():
     for threshold, mult in ROT_SPEED_BINS:
         if dt > threshold:
             return mult
-    return 20
+    return 50
 
 def adjust_freq(delta, speed=1):
     """Adjust frequency by delta × speed steps."""

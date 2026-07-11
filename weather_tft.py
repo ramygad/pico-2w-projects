@@ -160,7 +160,7 @@ enc_counter = 0  # accumulates direction; emit event at |count| >= 4
 enc_push_prev = enc_push.value
 last_push_time = 0
 last_rot_time = 0
-ROT_DEBOUNCE = 0.15  # 150ms between rotation events
+ROT_DEBOUNCE = 0.01   # 10ms — quadrature table already rejects noise
 
 def read_encoder():
     """Poll EC11 encoder using quadrature transition table.
@@ -499,7 +499,7 @@ REFRESH_SEC = 300  # 5 minutes auto-refresh
 last_refresh = time.monotonic()
 
 # Speed-aware rotation for city switching
-ROT_SPEED_BINS = [(0.5, 1), (0.3, 2), (0.15, 3), (0.075, N_CITIES), (0.0, N_CITIES)]
+ROT_SPEED_BINS = [(0.30, 1), (0.12, 2), (0.06, N_CITIES), (0.03, N_CITIES), (0.0, N_CITIES)]
 last_rot_event = 0
 
 def city_step():
