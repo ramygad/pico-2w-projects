@@ -171,6 +171,7 @@ def read_encoder():
     """Poll EC11 encoder using quadrature transition table.
     Returns -1 (CCW), +1 (CW), 0 (no movement), 99 (push)."""
     global enc_last_state, enc_counter, enc_push_prev, last_push_time, last_rot_time
+    global raw_transition_count, last_speed_check
 
     now = time.monotonic()
 

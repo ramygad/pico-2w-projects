@@ -148,6 +148,7 @@ def read_encoder_and_keys():
     Returns: 0=nothing, 1=CW, -1=CCW, 99=push, 98=KEY0 press"""
     global enc_last_state, enc_counter, enc_push_prev, key0_prev
     global last_rot_time, last_push_time, last_key0_time
+    global raw_transition_count
 
     now = time.monotonic()
 
@@ -361,11 +362,19 @@ def update_display():
         active_indicator.y = 94
         freq_label.color = YELLOW
         amp_label.color = GRAY
-    else:
+        wave_label.color = GREEN  # keep visible but not highlighted
+    elif active_param == "amp":
         active_indicator.text = ">"
         active_indicator.y = 122
         freq_label.color = GRAY
         amp_label.color = YELLOW
+        wave_label.color = GREEN
+    else:  # wave
+        active_indicator.text = ">"
+        active_indicator.y = 28   # beside wave name at y=24
+        freq_label.color = GRAY
+        amp_label.color = GRAY
+        wave_label.color = YELLOW
 
     # Waveform visualization
     draw_waveform()
@@ -481,8 +490,10 @@ while True:
         s = calc_speed()
         if active_param == "freq":
             adjust_freq(1, s)
-        else:
+        elif active_param == "amp":
             adjust_amp(1, s)
+        else:  # wave — CW = next waveform
+            current_wave = (current_wave + 1) % N_WAVES
         need_display_update = True
         need_audio_update = True
 
@@ -490,13 +501,20 @@ while True:
         s = calc_speed()
         if active_param == "freq":
             adjust_freq(-1, s)
-        else:
+        elif active_param == "amp":
             adjust_amp(-1, s)
+        else:  # wave — CCW = previous waveform
+            current_wave = (current_wave - 1) % N_WAVES
         need_display_update = True
         need_audio_update = True
 
-    elif event == 99:  # Push — toggle active parameter
-        active_param = "amp" if active_param == "freq" else "freq"
+    elif event == 99:  # Push — cycle active parameter: freq → amp → wave → freq
+        if active_param == "freq":
+            active_param = "amp"
+        elif active_param == "amp":
+            active_param = "wave"
+        else:
+            active_param = "freq"
         need_display_update = True
         print(f"Active: {active_param}")
 
